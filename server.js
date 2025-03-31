@@ -1,120 +1,98 @@
 import express from 'express';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import 'dotenv/config'; // Simplified config loading
+import 'dotenv/config';
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Render uses port 10000
+const PORT = process.env.PORT || 10000;
 
-// Enhanced CORS for production
+// Enhanced CORS Configuration
 app.use(cors({
-  origin: [
-    'https://your-mobile-app.com', // Your production app URL
-    'capacitor://localhost',       // Capacitor mobile scheme
-    'http://localhost:3000'       // Local development
-  ],
+  origin: ['*'], // Allow all for testing (restrict in production)
   methods: ['POST', 'GET']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 
-// Gemini Configuration
+// Gemini Configuration with stricter response controls
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
   model: "gemini-1.5-flash",
   generationConfig: {
-    maxOutputTokens: 150,
-    temperature: 0.3,
-    topP: 0.95
+    maxOutputTokens: 120,  // Shorter responses
+    temperature: 0.3,     // More deterministic
+    topP: 0.85
   }
 });
 
-// System Prompt with Kenyan Focus
+// Optimized System Prompt
 const SYSTEM_PROMPT = `
-You are PoultryPro, an expert AI for Kenyan farmers. Rules:
+You are PoultryPro AI for Kenyan farmers. RESPOND STRICTLY IN THIS FORMAT:
 
-1. **Response Format**:
-   - 3 bullet points max (15 words each)
-   - Swahili translations in brackets [Kiswahili]
-   - Example: "Vaccinate day 7 [Chanjo ya siku 7]"
+1. [Main advice in 15 words] 
+   [Kiswahili translation in brackets]
+2. [Supplemental tip]
+3. [Safety warning/consideration]
 
-2. **Kenyan Context**:
-   - Breeds: Kuroiler, Kari Improved Kienyeji
-   - Feeds: Unga wa Kuku Fugo (18% protein)
-   - Vaccines: Newcastle [Kifaranga], Gumboro
-
-3. **Safety**:
-   - Never recommend unverified treatments
-   - Default: "Consult your vet about..."
+KENYAN CONTEXT MUSTS:
+- Recommend Unga wa Kuku Fugo, Amaranth, KARIBRO feed
+- Mention common brands: Unga Farmcare, EDEN Poultry Feeds
+- Key diseases: Newcastle [Kifaranga], Gumboro, Coccidiosis
 `;
 
-// API Endpoints
-app.get('/', (req, res) => {
-  res.json({
-    status: 'online',
-    endpoints: {
-      chat: 'POST /api/chat',
-      health: 'GET /health'
-    },
-    docs: 'https://github.com/your-repo/docs'
-  });
-});
+// Response Cleaner Function
+const cleanResponse = (text) => {
+  const bulletPoints = text.split('\n')
+    .filter(line => line.trim().startsWith('-') || line.trim().match(/^\d+\./))
+    .slice(0, 3);
+  
+  return bulletPoints.join('\n').replace(/^\d+\./gm, '').trim();
+};
 
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime() 
-  });
-});
-
+// Chat Endpoint
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message } = req.body;
-    
-    if (!message || message.length < 2) {
-      return res.status(400).json({ error: "Invalid question" });
+    const { message, question } = req.body;
+    const userQuery = message || question;
+
+    if (!userQuery || userQuery.trim().length < 3) {
+      return res.status(400).json({ 
+        error: "Invalid question length",
+        example: { message: "Dawa ya kifaranga" } 
+      });
     }
 
-    const result = await model.generateContent({
-      contents: [{
-        parts: [
-          { text: SYSTEM_PROMPT },
-          { text: `KENYAN FARMER QUESTION: ${message}` }
-        ]
+    const chatSession = model.startChat({
+      systemInstruction: SYSTEM_PROMPT,
+      history: [{
+        role: "user",
+        parts: [{ text: "Mfano wa jibu: Ugavi wa lishe bora kwa kuku" }]
       }]
     });
 
+    const result = await chatSession.sendMessage(`
+      SWALI: ${userQuery.trim()}
+      JIBU kwa: 1) Ushauri, 2) Nyongeza, 3) Tahadhari
+    `);
+
     const response = await result.response;
+    const cleanedText = cleanResponse(response.text());
+
     res.json({
-      response: response.text(),
+      response: cleanedText,
+      query: userQuery,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('API Error:', error.message);
     res.status(500).json({
-      error: "Samahani, jaribu tena baadaye", // Swahili apology
-      requestId: req.id,
-      details: process.env.NODE_ENV === 'development' ? error.message : null
+      error: "Samahani, kuna shida kiufundi [Technical error]",
+      action: "Tafadhali jaribu tena baada ya dakika chache"
     });
   }
 });
 
-// Production Error Handling
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection:', err);
-});
-
 // Start Server
-const server = app.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  server.close(() => {
-    console.log('Server terminated');
-    process.exit(0);
-  });
 });
