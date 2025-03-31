@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: poultry-pro-api
+    runtime: node
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        value: "AIzaSyBL8RnznATIpNnE_h8E9PdaN3_dftANT-0"  # 🔴 Replace with your real key
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
+    autoDeploy: true
+    plan: free
