@@ -1,98 +1,88 @@
 import express from 'express';
-import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import cors from 'cors';
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
-// Enhanced CORS Configuration
-app.use(cors({
-  origin: ['*'], // Allow all for testing (restrict in production)
-  methods: ['POST', 'GET']
-}));
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-app.use(express.json({ limit: '10kb' }));
+// Configuration
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// Gemini Configuration with stricter response controls
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash",
-  generationConfig: {
-    maxOutputTokens: 120,  // Shorter responses
-    temperature: 0.3,     // More deterministic
-    topP: 0.85
-  }
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({
+    status: 'running',
+    apiKeyConfigured: !!process.env.GEMINI_API_KEY,
+    serverTime: new Date().toISOString()
+  });
 });
 
-// Optimized System Prompt
-const SYSTEM_PROMPT = `
-You are PoultryPro AI for Kenyan farmers. RESPOND STRICTLY IN THIS FORMAT:
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    geminiReady: !!process.env.GEMINI_API_KEY 
+  });
+});
 
-1. [Main advice in 15 words] 
-   [Kiswahili translation in brackets]
-2. [Supplemental tip]
-3. [Safety warning/consideration]
-
-KENYAN CONTEXT MUSTS:
-- Recommend Unga wa Kuku Fugo, Amaranth, KARIBRO feed
-- Mention common brands: Unga Farmcare, EDEN Poultry Feeds
-- Key diseases: Newcastle [Kifaranga], Gumboro, Coccidiosis
-`;
-
-// Response Cleaner Function
-const cleanResponse = (text) => {
-  const bulletPoints = text.split('\n')
-    .filter(line => line.trim().startsWith('-') || line.trim().match(/^\d+\./))
-    .slice(0, 3);
-  
-  return bulletPoints.join('\n').replace(/^\d+\./gm, '').trim();
-};
-
-// Chat Endpoint
+// Main chat endpoint
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message, question } = req.body;
-    const userQuery = message || question;
-
-    if (!userQuery || userQuery.trim().length < 3) {
-      return res.status(400).json({ 
-        error: "Invalid question length",
-        example: { message: "Dawa ya kifaranga" } 
-      });
+    // Validate input
+    if (!req.body.question) {
+      return res.status(400).json({ error: "Question is required" });
     }
 
-    const chatSession = model.startChat({
-      systemInstruction: SYSTEM_PROMPT,
-      history: [{
-        role: "user",
-        parts: [{ text: "Mfano wa jibu: Ugavi wa lishe bora kwa kuku" }]
+    console.log("Processing question:", req.body.question);
+
+    // Generate content
+    const result = await model.generateContent({
+      contents: [{
+        parts: [
+          { text: "You are a poultry farming assistant for Kenyan farmers. Respond in 3 concise bullet points with Swahili translations." },
+          { text: req.body.question }
+        ]
       }]
     });
 
-    const result = await chatSession.sendMessage(`
-      SWALI: ${userQuery.trim()}
-      JIBU kwa: 1) Ushauri, 2) Nyongeza, 3) Tahadhari
-    `);
-
     const response = await result.response;
-    const cleanedText = cleanResponse(response.text());
+    const text = response.text();
+
+    if (!text) {
+      throw new Error("Empty response from Gemini API");
+    }
 
     res.json({
-      response: cleanedText,
-      query: userQuery,
+      response: text,
+      query: req.body.question,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
+    console.error("API Error:", error);
     res.status(500).json({
-      error: "Samahani, kuna shida kiufundi [Technical error]",
-      action: "Tafadhali jaribu tena baada ya dakika chache"
+      error: "Failed to process question",
+      details: process.env.NODE_ENV === 'development' ? error.message : null
     });
   }
 });
 
-// Start Server
+// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Gemini API ready: ${!!process.env.GEMINI_API_KEY}`);
+});
+
+// Error handling
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err);
 });
